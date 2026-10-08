@@ -100,7 +100,6 @@ app.post('/api/auth/login', async (req, res) => {
 // 2. VINCULACIÓN ENTRE CUIDADOR Y PACIENTE
 // ==========================================
 
-// El cuidador vincula a un paciente por su correo electrónico
 app.post('/api/vinculos/enlazar', async (req, res) => {
     const { cuidador_id, correo_paciente } = req.body;
 
@@ -120,7 +119,6 @@ app.post('/api/vinculos/enlazar', async (req, res) => {
 
         const paciente = pacientes[0];
 
-        // Guardar o actualizar la vinculación
         await db.query(`
             INSERT INTO vinculos (cuidador_id, paciente_id, estado)
             VALUES (?, ?, 'activo')
@@ -138,7 +136,6 @@ app.post('/api/vinculos/enlazar', async (req, res) => {
     }
 });
 
-// Obtener el paciente asignado al cuidador
 app.get('/api/vinculos/paciente-de/:cuidador_id', async (req, res) => {
     const { cuidador_id } = req.params;
 
@@ -163,10 +160,9 @@ app.get('/api/vinculos/paciente-de/:cuidador_id', async (req, res) => {
 });
 
 // ==========================================
-// 3. GESTIÓN DE MEDICAMENTOS
+// 3. GESTIÓN DE MEDICAMENTOS Y ESTADOS
 // ==========================================
 
-// Agregar medicamento (acción realizada por el cuidador)
 app.post('/api/medicamentos', async (req, res) => {
     const { paciente_id, cuidador_id, nombre, dosis, instrucciones, hora_programada } = req.body;
 
@@ -191,10 +187,17 @@ app.post('/api/medicamentos', async (req, res) => {
     }
 });
 
-// Consultar medicamentos de un paciente con el estado de HOY
+// Consultar medicamentos de un paciente con cálculo dinámico de retraso
 app.get('/api/medicamentos/hoy/:paciente_id', async (req, res) => {
     const { paciente_id } = req.params;
-    const hoy = new Date().toISOString().slice(0, 10); // Formato YYYY-MM-DD
+
+    // Fecha actual en formato YYYY-MM-DD según la hora local de México
+    const fechaOpciones = { timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit', day: '2-digit' };
+    const partesFecha = new Intl.DateTimeFormat('es-MX', fechaOpciones).formatToParts(new Date());
+    const anio = partesFecha.find(p => p.type === 'year').value;
+    const mes = partesFecha.find(p => p.type === 'month').value;
+    const dia = partesFecha.find(p => p.type === 'day').value;
+    const hoy = `${anio}-${mes}-${dia}`;
 
     try {
         const [medicamentos] = await db.query(`
@@ -204,7 +207,7 @@ app.get('/api/medicamentos/hoy/:paciente_id', async (req, res) => {
                 m.dosis,
                 m.instrucciones,
                 TIME_FORMAT(m.hora_programada, '%H:%i') AS hora_programada,
-                COALESCE(ht.estado, 'pendiente') AS estado_hoy,
+                COALESCE(ht.estado, 'pendiente') AS estado_base,
                 TIME_FORMAT(ht.hora_tomada, '%H:%i') AS hora_tomada
             FROM medicamentos m
             LEFT JOIN historial_tomas ht 
@@ -213,13 +216,42 @@ app.get('/api/medicamentos/hoy/:paciente_id', async (req, res) => {
             ORDER BY m.hora_programada ASC
         `, [hoy, paciente_id]);
 
-        // Métricas rápidas
-        const total = medicamentos.length;
-        const tomadas = medicamentos.filter(m => m.estado_hoy === 'tomada').length;
+        // Minutos transcurridos en el día actual (zona horaria CDMX)
+        const ahora = new Date();
+        const horaStr = ahora.toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour12: false, hour: '2-digit', minute: '2-digit' });
+        const [hActual, mActual] = horaStr.split(':').map(Number);
+        const minutosActuales = hActual * 60 + mActual;
+
+        const listaProcesada = medicamentos.map(med => {
+            let estadoCalculado = med.estado_base;
+
+            // Si está pendiente y ya transcurrieron más de 15 minutos de la hora programada
+            if (estadoCalculado === 'pendiente') {
+                const [hProg, mProg] = med.hora_programada.split(':').map(Number);
+                const minutosProgramados = hProg * 60 + mProg;
+
+                if (minutosActuales > minutosProgramados + 15) {
+                    estadoCalculado = 'retrasada';
+                }
+            }
+
+            return {
+                id: med.id,
+                nombre: med.nombre,
+                dosis: med.dosis,
+                instrucciones: med.instrucciones,
+                hora_programada: med.hora_programada,
+                estado_hoy: estadoCalculado,
+                hora_tomada: med.hora_tomada
+            };
+        });
+
+        const total = listaProcesada.length;
+        const tomadas = listaProcesada.filter(m => m.estado_hoy === 'tomada').length;
+        const retrasadas = listaProcesada.filter(m => m.estado_hoy === 'retrasada').length;
         const cumplimiento = total > 0 ? Math.round((tomadas / total) * 100) : 0;
-        
-        // Última toma registrada hoy
-        const ultimas = medicamentos.filter(m => m.hora_tomada !== null);
+
+        const ultimas = listaProcesada.filter(m => m.hora_tomada !== null);
         const ultimaToma = ultimas.length > 0 ? ultimas[ultimas.length - 1].hora_tomada : null;
 
         return res.json({
@@ -227,10 +259,11 @@ app.get('/api/medicamentos/hoy/:paciente_id', async (req, res) => {
             metricas: {
                 total,
                 tomadas,
+                retrasadas,
                 cumplimiento: `${cumplimiento}%`,
                 ultima_toma: ultimaToma ? `${ultimaToma} hrs` : '--:--'
             },
-            medicamentos
+            medicamentos: listaProcesada
         });
     } catch (error) {
         console.error('Error al listar medicamentos:', error);
@@ -249,12 +282,16 @@ app.post('/api/tomas/confirmar', async (req, res) => {
         return res.status(400).json({ success: false, mensaje: 'Faltan parámetros de toma' });
     }
 
-    const hoy = new Date().toISOString().slice(0, 10);
-    // Hora actual del servidor formateada como HH:MM:SS
-    const ahora = new Date().toTimeString().split(' ')[0];
+    const fechaOpciones = { timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit', day: '2-digit' };
+    const partesFecha = new Intl.DateTimeFormat('es-MX', fechaOpciones).formatToParts(new Date());
+    const anio = partesFecha.find(p => p.type === 'year').value;
+    const mes = partesFecha.find(p => p.type === 'month').value;
+    const dia = partesFecha.find(p => p.type === 'day').value;
+    const hoy = `${anio}-${mes}-${dia}`;
+
+    const ahora = new Date().toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour12: false });
 
     try {
-        // Verificar si ya existe registro de hoy o si se crea nuevo
         const [existe] = await db.query(
             'SELECT id FROM historial_tomas WHERE medicamento_id = ? AND fecha = ?',
             [medicamento_id, hoy]
@@ -267,7 +304,6 @@ app.post('/api/tomas/confirmar', async (req, res) => {
                 WHERE id = ?
             `, [ahora, existe[0].id]);
         } else {
-            // Obtenemos la hora programada original del medicamento
             const [med] = await db.query('SELECT hora_programada FROM medicamentos WHERE id = ?', [medicamento_id]);
             const horaProg = med.length > 0 ? med[0].hora_programada : ahora;
 
@@ -280,7 +316,7 @@ app.post('/api/tomas/confirmar', async (req, res) => {
         return res.json({
             success: true,
             mensaje: '¡Toma confirmada correctamente!',
-            hora_tomada: ahora.slice(0, 5) // HH:MM
+            hora_tomada: ahora.slice(0, 5)
         });
     } catch (error) {
         console.error('Error al confirmar toma:', error);
