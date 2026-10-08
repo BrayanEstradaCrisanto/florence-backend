@@ -271,6 +271,60 @@ app.get('/api/medicamentos/hoy/:paciente_id', async (req, res) => {
     }
 });
 
+// Desactivar / Eliminar medicamento (Soft Delete)
+app.delete('/api/medicamentos/:id', async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const [resultado] = await db.query(
+            'UPDATE medicamentos SET activo = FALSE WHERE id = ?',
+            [id]
+        );
+
+        if (resultado.affectedRows === 0) {
+            return res.status(404).json({ success: false, mensaje: 'Medicamento no encontrado' });
+        }
+
+        return res.json({
+            success: true,
+            mensaje: 'Medicamento retirado del tratamiento con éxito'
+        });
+    } catch (error) {
+        console.error('Error al retirar medicamento:', error);
+        return res.status(500).json({ success: false, mensaje: 'Error interno al eliminar medicamento' });
+    }
+});
+
+// Editar medicamento existente
+app.put('/api/medicamentos/:id', async (req, res) => {
+    const { id } = req.params;
+    const { nombre, dosis, instrucciones, hora_programada } = req.body;
+
+    if (!nombre || !dosis || !hora_programada) {
+        return res.status(400).json({ success: false, mensaje: 'Nombre, dosis y horario son obligatorios' });
+    }
+
+    try {
+        const [resultado] = await db.query(`
+            UPDATE medicamentos 
+            SET nombre = ?, dosis = ?, instrucciones = ?, hora_programada = ?
+            WHERE id = ? AND activo = TRUE
+        `, [nombre, dosis, instrucciones || '', hora_programada, id]);
+
+        if (resultado.affectedRows === 0) {
+            return res.status(404).json({ success: false, mensaje: 'Medicamento no encontrado o inactivo' });
+        }
+
+        return res.json({
+            success: true,
+            mensaje: 'Tratamiento actualizado correctamente'
+        });
+    } catch (error) {
+        console.error('Error al editar medicamento:', error);
+        return res.status(500).json({ success: false, mensaje: 'Error al actualizar medicamento' });
+    }
+});
+
 // ==========================================
 // 4. CONFIRMAR TOMA (ACCIÓN DEL PACIENTE)
 // ==========================================
