@@ -138,7 +138,6 @@ app.post('/api/vinculos/enlazar', async (req, res) => {
 
 app.get('/api/vinculos/paciente-de/:cuidador_id', async (req, res) => {
     const { cuidador_id } = req.params;
-
     try {
         const [rows] = await db.query(`
             SELECT u.id, u.nombre, u.correo
@@ -154,11 +153,9 @@ app.get('/api/vinculos/paciente-de/:cuidador_id', async (req, res) => {
 
         return res.json({ success: true, vinculado: true, paciente: rows[0] });
     } catch (error) {
-        console.error('Error al obtener paciente:', error);
         return res.status(500).json({ success: false, mensaje: 'Error de servidor' });
     }
 });
-
 // ==========================================
 // 3. GESTIÓN DE MEDICAMENTOS Y ESTADOS
 // ==========================================
