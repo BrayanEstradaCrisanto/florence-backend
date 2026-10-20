@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const nodemailer = require('nodemailer');
+const crypto = require('crypto');
 const db = require('./db');
 require('dotenv').config();
 
@@ -11,8 +13,22 @@ app.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'secreto_super_seguro';
 
+// Configuración del servicio de correo Nodemailer
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: process.env.EMAIL_USER || 'florence.app.soporte@gmail.com',
+        pass: process.env.EMAIL_PASS
+    }
+});
+
+// Endpoint Keep-Alive para evitar suspensión en Render
+app.get('/api/ping', (req, res) => {
+    res.send('OK - Florence API Activa');
+});
+
 // ==========================================
-// 1. AUTENTICACIÓN (REGISTRO Y LOGIN)
+// 1. AUTENTICACIÓN Y RECUPERACIÓN DE CONTRASEÑA
 // ==========================================
 
 app.post('/api/auth/registro', async (req, res) => {
@@ -23,7 +39,9 @@ app.post('/api/auth/registro', async (req, res) => {
     }
 
     try {
-        const [existe] = await db.query('SELECT id FROM usuarios WHERE correo = ?', [correo]);
+        const correoLimpio = correo.trim().toLowerCase();
+        const [existe] = await db.query('SELECT id FROM usuarios WHERE LOWER(TRIM(correo)) = ?', [correoLimpio]);
+        
         if (existe.length > 0) {
             return res.status(409).json({ success: false, mensaje: 'El correo ya se encuentra registrado' });
         }
@@ -33,7 +51,7 @@ app.post('/api/auth/registro', async (req, res) => {
 
         const [resultado] = await db.query(
             'INSERT INTO usuarios (nombre, correo, contrasena, rol) VALUES (?, ?, ?, ?)',
-            [nombre, correo, passHash, rol]
+            [nombre.trim(), correoLimpio, passHash, rol]
         );
 
         const token = jwt.sign(
@@ -46,7 +64,7 @@ app.post('/api/auth/registro', async (req, res) => {
             success: true,
             mensaje: 'Usuario registrado correctamente',
             token: token,
-            usuario: { id: resultado.insertId, nombre, correo, rol }
+            usuario: { id: resultado.insertId, nombre: nombre.trim(), correo: correoLimpio, rol }
         });
     } catch (error) {
         console.error('Error en registro:', error);
@@ -62,7 +80,9 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     try {
-        const [usuarios] = await db.query('SELECT * FROM usuarios WHERE correo = ?', [correo]);
+        const correoLimpio = correo.trim().toLowerCase();
+        const [usuarios] = await db.query('SELECT * FROM usuarios WHERE LOWER(TRIM(correo)) = ?', [correoLimpio]);
+
         if (usuarios.length === 0) {
             return res.status(401).json({ success: false, mensaje: 'Credenciales inválidas' });
         }
@@ -96,6 +116,107 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
+// Solicitar código de recuperación de contraseña
+app.post('/api/auth/recuperar-password', async (req, res) => {
+    const { correo } = req.body;
+
+    if (!correo) {
+        return res.status(400).json({ success: false, mensaje: 'Ingresa tu correo electrónico' });
+    }
+
+    try {
+        const correoLimpio = correo.trim().toLowerCase();
+        const [usuarios] = await db.query('SELECT id, nombre FROM usuarios WHERE LOWER(TRIM(correo)) = ?', [correoLimpio]);
+
+        if (usuarios.length === 0) {
+            return res.status(404).json({ success: false, mensaje: 'El correo no se encuentra registrado' });
+        }
+
+        const usuario = usuarios[0];
+        // Generar un código numérico de 6 dígitos
+        const token = Math.floor(100000 + Math.random() * 900000).toString();
+        
+        // Expiración en 15 minutos
+        const expiracion = new Date(Date.now() + 15 * 60 * 1000);
+
+        await db.query(
+            'UPDATE usuarios SET reset_token = ?, reset_token_expira = ? WHERE id = ?',
+            [token, expiracion, usuario.id]
+        );
+
+        const mailOptions = {
+            from: '"Florence App" <florence.app.soporte@gmail.com>',
+            to: correoLimpio,
+            subject: 'Código de Recuperación de Contraseña - Florence',
+            html: `
+                <div style="font-family: Arial, sans-serif; padding: 20px; color: #0F172A;">
+                    <h2 style="color: #1E3A8A;">Recuperación de Contraseña - Florence</h2>
+                    <p>Hola <strong>${usuario.nombre}</strong>,</p>
+                    <p>Recibimos una solicitud para restablecer la contraseña de tu cuenta.</p>
+                    <p>Tu código de verificación es:</p>
+                    <div style="background-color: #F1F5F9; padding: 15px; border-radius: 8px; text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 4px; color: #1E3A8A; width: 200px;">
+                        ${token}
+                    </div>
+                    <p>Este código expirará en 15 minutos.</p>
+                    <p style="font-size: 12px; color: #64748B;">Si no solicitaste este cambio, puedes ignorar este mensaje.</p>
+                </div>
+            `
+        };
+
+        await transporter.sendMail(mailOptions);
+
+        return res.json({
+            success: true,
+            mensaje: 'Código de verificación enviado al correo'
+        });
+
+    } catch (error) {
+        console.error('Error al solicitar recuperación:', error);
+        return res.status(500).json({ success: false, mensaje: 'Error al enviar el correo de recuperación' });
+    }
+});
+
+// Restablecer contraseña con el código
+app.post('/api/auth/restablecer-password', async (req, res) => {
+    const { correo, token, nuevaContrasena } = req.body;
+
+    if (!correo || !token || !nuevaContrasena) {
+        return res.status(400).json({ success: false, mensaje: 'Todos los campos son obligatorios' });
+    }
+
+    try {
+        const correoLimpio = correo.trim().toLowerCase();
+        const tokenLimpio = token.trim();
+
+        const [usuarios] = await db.query(
+            'SELECT id FROM usuarios WHERE LOWER(TRIM(correo)) = ? AND reset_token = ? AND reset_token_expira > NOW()',
+            [correoLimpio, tokenLimpio]
+        );
+
+        if (usuarios.length === 0) {
+            return res.status(400).json({ success: false, mensaje: 'Código inválido o ha expirado' });
+        }
+
+        const usuarioId = usuarios[0].id;
+        const salt = await bcrypt.genSalt(10);
+        const passHash = await bcrypt.hash(nuevaContrasena, salt);
+
+        await db.query(
+            'UPDATE usuarios SET contrasena = ?, reset_token = NULL, reset_token_expira = NULL WHERE id = ?',
+            [passHash, usuarioId]
+        );
+
+        return res.json({
+            success: true,
+            mensaje: 'Contraseña actualizada con éxito'
+        });
+
+    } catch (error) {
+        console.error('Error al restablecer contraseña:', error);
+        return res.status(500).json({ success: false, mensaje: 'Error interno del servidor' });
+    }
+});
+
 // ==========================================
 // 2. VINCULACIÓN ENTRE CUIDADOR Y PACIENTE
 // ==========================================
@@ -108,13 +229,14 @@ app.post('/api/vinculos/enlazar', async (req, res) => {
     }
 
     try {
+        const correoLimpio = correo_paciente.trim().toLowerCase();
         const [pacientes] = await db.query(
-            "SELECT id, nombre, correo FROM usuarios WHERE correo = ? AND rol = 'paciente'",
-            [correo_paciente.trim()]
+            "SELECT id, nombre, correo FROM usuarios WHERE LOWER(TRIM(correo)) = ? AND rol = 'paciente'",
+            [correoLimpio]
         );
 
         if (pacientes.length === 0) {
-            return res.status(404).json({ success: false, mensaje: 'No existe un paciente con ese correo' });
+            return res.status(404).json({ success: false, mensaje: 'No existe un paciente registrado con ese correo' });
         }
 
         const paciente = pacientes[0];
@@ -156,6 +278,7 @@ app.get('/api/vinculos/paciente-de/:cuidador_id', async (req, res) => {
         return res.status(500).json({ success: false, mensaje: 'Error de servidor' });
     }
 });
+
 // ==========================================
 // 3. GESTIÓN DE MEDICAMENTOS Y ESTADOS
 // ==========================================
@@ -184,11 +307,9 @@ app.post('/api/medicamentos', async (req, res) => {
     }
 });
 
-// Consultar medicamentos de un paciente con cálculo dinámico de retraso
 app.get('/api/medicamentos/hoy/:paciente_id', async (req, res) => {
     const { paciente_id } = req.params;
 
-    // Fecha actual en formato YYYY-MM-DD según la hora local de México
     const fechaOpciones = { timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit', day: '2-digit' };
     const partesFecha = new Intl.DateTimeFormat('es-MX', fechaOpciones).formatToParts(new Date());
     const anio = partesFecha.find(p => p.type === 'year').value;
@@ -213,7 +334,6 @@ app.get('/api/medicamentos/hoy/:paciente_id', async (req, res) => {
             ORDER BY m.hora_programada ASC
         `, [hoy, paciente_id]);
 
-        // Minutos transcurridos en el día actual (zona horaria CDMX)
         const ahora = new Date();
         const horaStr = ahora.toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour12: false, hour: '2-digit', minute: '2-digit' });
         const [hActual, mActual] = horaStr.split(':').map(Number);
@@ -222,7 +342,6 @@ app.get('/api/medicamentos/hoy/:paciente_id', async (req, res) => {
         const listaProcesada = medicamentos.map(med => {
             let estadoCalculado = med.estado_base;
 
-            // Si está pendiente y ya transcurrieron más de 15 minutos de la hora programada
             if (estadoCalculado === 'pendiente') {
                 const [hProg, mProg] = med.hora_programada.split(':').map(Number);
                 const minutosProgramados = hProg * 60 + mProg;
@@ -268,7 +387,6 @@ app.get('/api/medicamentos/hoy/:paciente_id', async (req, res) => {
     }
 });
 
-// Desactivar / Eliminar medicamento (Soft Delete)
 app.delete('/api/medicamentos/:id', async (req, res) => {
     const { id } = req.params;
 
@@ -292,7 +410,6 @@ app.delete('/api/medicamentos/:id', async (req, res) => {
     }
 });
 
-// Editar medicamento existente
 app.put('/api/medicamentos/:id', async (req, res) => {
     const { id } = req.params;
     const { nombre, dosis, instrucciones, hora_programada } = req.body;
