@@ -118,6 +118,8 @@ app.post('/api/auth/login', async (req, res) => {
 
 // Solicitar código de recuperación de contraseña
 app.post('/api/auth/recuperar-password', async (req, res) => {
+    console.log("==> Petición recibida en /recuperar-password:", req.body);
+
     const { correo } = req.body;
 
     if (!correo) {
@@ -126,23 +128,25 @@ app.post('/api/auth/recuperar-password', async (req, res) => {
 
     try {
         const correoLimpio = correo.trim().toLowerCase();
+        console.log("Buscando correo:", correoLimpio);
+
         const [usuarios] = await db.query('SELECT id, nombre FROM usuarios WHERE LOWER(TRIM(correo)) = ?', [correoLimpio]);
 
         if (usuarios.length === 0) {
+            console.log("Correo no encontrado en BD");
             return res.status(404).json({ success: false, mensaje: 'El correo no se encuentra registrado' });
         }
 
         const usuario = usuarios[0];
-        // Generar un código numérico de 6 dígitos
         const token = Math.floor(100000 + Math.random() * 900000).toString();
-        
-        // Expiración en 15 minutos
         const expiracion = new Date(Date.now() + 15 * 60 * 1000);
 
         await db.query(
             'UPDATE usuarios SET reset_token = ?, reset_token_expira = ? WHERE id = ?',
             [token, expiracion, usuario.id]
         );
+
+        console.log("Token generado con éxito. Intentando enviar correo...");
 
         const mailOptions = {
             from: '"Florence App" <florence.app.soporte@gmail.com>',
@@ -152,27 +156,31 @@ app.post('/api/auth/recuperar-password', async (req, res) => {
                 <div style="font-family: Arial, sans-serif; padding: 20px; color: #0F172A;">
                     <h2 style="color: #1E3A8A;">Recuperación de Contraseña - Florence</h2>
                     <p>Hola <strong>${usuario.nombre}</strong>,</p>
-                    <p>Recibimos una solicitud para restablecer la contraseña de tu cuenta.</p>
                     <p>Tu código de verificación es:</p>
                     <div style="background-color: #F1F5F9; padding: 15px; border-radius: 8px; text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 4px; color: #1E3A8A; width: 200px;">
                         ${token}
                     </div>
                     <p>Este código expirará en 15 minutos.</p>
-                    <p style="font-size: 12px; color: #64748B;">Si no solicitaste este cambio, puedes ignorar este mensaje.</p>
                 </div>
             `
         };
 
-        await transporter.sendMail(mailOptions);
-
-        return res.json({
-            success: true,
-            mensaje: 'Código de verificación enviado al correo'
-        });
+        // Enviar correo de forma explícita manejando posibles fallos de Nodemailer
+        try {
+            await transporter.sendMail(mailOptions);
+            console.log("Correo enviado satisfactoriamente");
+            return res.json({ success: true, mensaje: 'Código de verificación enviado al correo' });
+        } catch (mailError) {
+            console.error("Error directo de Nodemailer/Gmail:", mailError);
+            return res.status(500).json({ 
+                success: false, 
+                mensaje: 'Error de autenticación al enviar el correo (Verifica contraseña de aplicación de Gmail)' 
+            });
+        }
 
     } catch (error) {
-        console.error('Error al solicitar recuperación:', error);
-        return res.status(500).json({ success: false, mensaje: 'Error al enviar el correo de recuperación' });
+        console.error('Error general en la consulta:', error);
+        return res.status(500).json({ success: false, mensaje: 'Error interno del servidor' });
     }
 });
 
