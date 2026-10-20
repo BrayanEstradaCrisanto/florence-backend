@@ -2,8 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
 const crypto = require('crypto');
+const { Resend } = require('resend');
 const db = require('./db');
 require('dotenv').config();
 
@@ -13,23 +13,10 @@ app.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'secreto_super_seguro';
 
-// Configuración del servicio de correo Nodemailer
-// Configuración explícita de Nodemailer para evitar bloqueos de puerto en Render
-const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 587,
-    secure: false, // true para puerto 465, false para puerto 587
-    auth: {
-        user: process.env.EMAIL_USER || process.env.EMAIL_USUARIO || 'florence.app.soporte@gmail.com',
-        pass: process.env.EMAIL_PASS || process.env.EMAIL_PASSWORD
-    },
-    tls: {
-        rejectUnauthorized: false
-    },
-    connectionTimeout: 10000 // 10 segundos de límite para intentar la conexión SMTP
-});
+// Inicializar cliente de Resend (evita bloqueos de puerto SMTP en Render)
+const resend = new Resend(process.env.RESEND_API_KEY || 're_afmcrmyX_BQhSZm5xh5eDwuMaFE2H12ZS');
 
-// Endpoint Keep-Alive para evitar suspensión en Render
+// Endpoint Keep-Alive para mantener activo Render
 app.get('/api/ping', (req, res) => {
     res.send('OK - Florence API Activa');
 });
@@ -123,7 +110,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// Solicitar código de recuperación de contraseña
+// Solicitar código de recuperación de contraseña vía Resend API (HTTP)
 app.post('/api/auth/recuperar-password', async (req, res) => {
     console.log("==> Petición recibida en /recuperar-password:", req.body);
 
@@ -153,41 +140,31 @@ app.post('/api/auth/recuperar-password', async (req, res) => {
             [token, expiracion, usuario.id]
         );
 
-        console.log("Token generado con éxito. Intentando enviar correo...");
+        console.log("Token generado con éxito. Intentando enviar correo con Resend...");
 
-        const mailOptions = {
-            from: '"Florence App" <florence.app.soporte@gmail.com>',
+        const data = await resend.emails.send({
+            from: 'Florence App <onboarding@resend.dev>',
             to: correoLimpio,
             subject: 'Código de Recuperación de Contraseña - Florence',
             html: `
                 <div style="font-family: Arial, sans-serif; padding: 20px; color: #0F172A;">
                     <h2 style="color: #1E3A8A;">Recuperación de Contraseña - Florence</h2>
                     <p>Hola <strong>${usuario.nombre}</strong>,</p>
-                    <p>Tu código de verificación es:</p>
+                    <p>Tu código de verificación de 6 dígitos es:</p>
                     <div style="background-color: #F1F5F9; padding: 15px; border-radius: 8px; text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 4px; color: #1E3A8A; width: 200px;">
                         ${token}
                     </div>
                     <p>Este código expirará en 15 minutos.</p>
                 </div>
             `
-        };
+        });
 
-        // Enviar correo de forma explícita manejando posibles fallos de Nodemailer
-        try {
-            await transporter.sendMail(mailOptions);
-            console.log("Correo enviado satisfactoriamente");
-            return res.json({ success: true, mensaje: 'Código de verificación enviado al correo' });
-        } catch (mailError) {
-            console.error("Error directo de Nodemailer/Gmail:", mailError);
-            return res.status(500).json({ 
-                success: false, 
-                mensaje: 'Error de autenticación al enviar el correo (Verifica contraseña de aplicación de Gmail)' 
-            });
-        }
+        console.log("Respuesta de Resend:", data);
+        return res.json({ success: true, mensaje: 'Código de verificación enviado al correo' });
 
     } catch (error) {
-        console.error('Error general en la consulta:', error);
-        return res.status(500).json({ success: false, mensaje: 'Error interno del servidor' });
+        console.error('Error al solicitar recuperación con Resend:', error);
+        return res.status(500).json({ success: false, mensaje: 'Error al enviar el correo de recuperación' });
     }
 });
 
