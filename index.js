@@ -14,12 +14,19 @@ app.use(express.json());
 const JWT_SECRET = process.env.JWT_SECRET || 'secreto_super_seguro';
 
 // Configuración del servicio de correo Nodemailer
+// Configuración explícita de Nodemailer para evitar bloqueos de puerto en Render
 const transporter = nodemailer.createTransport({
-    service: 'gmail',
+    host: 'smtp.gmail.com',
+    port: 587,
+    secure: false, // true para puerto 465, false para puerto 587
     auth: {
-        user: process.env.EMAIL_USER || 'florence.app.soporte@gmail.com',
-        pass: process.env.EMAIL_PASS
-    }
+        user: process.env.EMAIL_USER || process.env.EMAIL_USUARIO || 'florence.app.soporte@gmail.com',
+        pass: process.env.EMAIL_PASS || process.env.EMAIL_PASSWORD
+    },
+    tls: {
+        rejectUnauthorized: false
+    },
+    connectionTimeout: 10000 // 10 segundos de límite para intentar la conexión SMTP
 });
 
 // Endpoint Keep-Alive para evitar suspensión en Render
