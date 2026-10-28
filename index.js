@@ -153,7 +153,7 @@ app.post('/api/auth/recuperar-password', async (req, res) => {
             body: JSON.stringify({
                 sender: { 
                     name: "Florence App", 
-                    email: "bryangegestrada@gmail.com" 
+                    email: "florence.app.soporte@gmail.com" 
                 },
                 to: [
                     { 
