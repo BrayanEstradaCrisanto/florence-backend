@@ -2,8 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 const db = require('./db');
 require('dotenv').config();
 
@@ -13,8 +12,16 @@ app.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'secreto_super_seguro';
 
-// Inicializar cliente de Resend (evita bloqueos de puerto SMTP en Render)
-const resend = new Resend(process.env.RESEND_API_KEY || 're_afmcrmyX_BQhSZm5xh5eDwuMaFE2H12ZS');
+// ==========================================
+// CONFIGURACIÓN DE NODEMAILER (GMAIL SMTP)
+// ==========================================
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: 'bryangegestrada@gmail.com',
+        pass: 'wvknupjwykcychwc' // Contraseña de aplicación de Google de 16 caracteres
+    }
+});
 
 // Endpoint Keep-Alive para mantener activo Render
 app.get('/api/ping', (req, res) => {
@@ -110,7 +117,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// Solicitar código de recuperación de contraseña vía Resend API (HTTP)
+// Solicitar código de recuperación de contraseña vía Nodemailer (Gmail SMTP)
 app.post('/api/auth/recuperar-password', async (req, res) => {
     console.log("==> Petición recibida en /recuperar-password:", req.body);
 
@@ -140,11 +147,11 @@ app.post('/api/auth/recuperar-password', async (req, res) => {
             [token, expiracion, usuario.id]
         );
 
-        console.log("Token generado con éxito. Intentando enviar correo con Resend...");
+        console.log("Token generado con éxito. Intentando enviar correo mediante Nodemailer...");
 
-        const data = await resend.emails.send({
-            from: 'Florence App <onboarding@resend.dev>',
-            to: correoLimpio,
+        const mailOptions = {
+            from: '"Florence App" <bryangegestrada@gmail.com>',
+            to: correoLimpio, // Envia a CUALQUIER correo electrónico
             subject: 'Código de Recuperación de Contraseña - Florence',
             html: `
                 <div style="font-family: Arial, sans-serif; padding: 20px; color: #0F172A;">
@@ -157,13 +164,15 @@ app.post('/api/auth/recuperar-password', async (req, res) => {
                     <p>Este código expirará en 15 minutos.</p>
                 </div>
             `
-        });
+        };
 
-        console.log("Respuesta de Resend:", data);
+        const info = await transporter.sendMail(mailOptions);
+        console.log("Correo enviado con éxito:", info.response);
+
         return res.json({ success: true, mensaje: 'Código de verificación enviado al correo' });
 
     } catch (error) {
-        console.error('Error al solicitar recuperación con Resend:', error);
+        console.error('Error al solicitar recuperación con Nodemailer:', error);
         return res.status(500).json({ success: false, mensaje: 'Error al enviar el correo de recuperación' });
     }
 });
