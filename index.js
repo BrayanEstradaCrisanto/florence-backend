@@ -16,11 +16,17 @@ const JWT_SECRET = process.env.JWT_SECRET || 'secreto_super_seguro';
 // CONFIGURACIÓN DE NODEMAILER (GMAIL SMTP)
 // ==========================================
 const transporter = nodemailer.createTransport({
-    service: 'gmail',
+    host: 'smtp.gmail.com',
+    port: 465,             // Usar puerto SSL directo (evita el bloqueo de Render)
+    secure: true,           // Usar TLS/SSL
     auth: {
         user: 'bryangegestrada@gmail.com',
-        pass: 'wvknupjwykcychwc' // Contraseña de aplicación de Google de 16 caracteres
-    }
+        pass: 'wvknupjwykcychwc' // Tu contraseña de aplicación
+    },
+    tls: {
+        rejectUnauthorized: false // Evita bloqueos por certificados intermedios
+    },
+    connectionTimeout: 10000 // Tiempo límite de conexión de 10s para que no se quede colgado
 });
 
 // Endpoint Keep-Alive para mantener activo Render
@@ -151,7 +157,7 @@ app.post('/api/auth/recuperar-password', async (req, res) => {
 
         const mailOptions = {
             from: '"Florence App" <bryangegestrada@gmail.com>',
-            to: correoLimpio, // Envia a CUALQUIER correo electrónico
+            to: correoLimpio,
             subject: 'Código de Recuperación de Contraseña - Florence',
             html: `
                 <div style="font-family: Arial, sans-serif; padding: 20px; color: #0F172A;">
