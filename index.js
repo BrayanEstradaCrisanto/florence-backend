@@ -10,7 +10,7 @@ app.use(cors());
 app.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'secreto_super_seguro';
-const BREVO_API_KEY = process.env.BREVO_API_KEY || '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';
+const BREVO_API_KEY = process.env.BREVO_API_KEY || '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';
 
 // Endpoint Keep-Alive para mantener activo Render
 app.get('/api/ping', (req, res) => {
