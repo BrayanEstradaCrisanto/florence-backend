@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
 const db = require('./db');
 require('dotenv').config();
 
@@ -11,23 +10,7 @@ app.use(cors());
 app.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'secreto_super_seguro';
-
-// ==========================================
-// CONFIGURACIÓN DE NODEMAILER (GMAIL SMTP)
-// ==========================================
-const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,             // Usar puerto SSL directo (evita el bloqueo de Render)
-    secure: true,           // Usar TLS/SSL
-    auth: {
-        user: 'bryangegestrada@gmail.com',
-        pass: 'wvknupjwykcychwc' // Tu contraseña de aplicación
-    },
-    tls: {
-        rejectUnauthorized: false // Evita bloqueos por certificados intermedios
-    },
-    connectionTimeout: 10000 // Tiempo límite de conexión de 10s para que no se quede colgado
-});
+const BREVO_API_KEY = process.env.BREVO_API_KEY || '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';
 
 // Endpoint Keep-Alive para mantener activo Render
 app.get('/api/ping', (req, res) => {
@@ -123,7 +106,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// Solicitar código de recuperación de contraseña vía Nodemailer (Gmail SMTP)
+// Solicitar código de recuperación de contraseña vía Brevo API REST (HTTP 443)
 app.post('/api/auth/recuperar-password', async (req, res) => {
     console.log("==> Petición recibida en /recuperar-password:", req.body);
 
@@ -153,32 +136,46 @@ app.post('/api/auth/recuperar-password', async (req, res) => {
             [token, expiracion, usuario.id]
         );
 
-        console.log("Token generado con éxito. Intentando enviar correo mediante Nodemailer...");
+        console.log("Token generado. Enviando correo mediante Brevo API REST a:", correoLimpio);
 
-        const mailOptions = {
-            from: '"Florence App" <bryangegestrada@gmail.com>',
-            to: correoLimpio,
-            subject: 'Código de Recuperación de Contraseña - Florence',
-            html: `
-                <div style="font-family: Arial, sans-serif; padding: 20px; color: #0F172A;">
-                    <h2 style="color: #1E3A8A;">Recuperación de Contraseña - Florence</h2>
-                    <p>Hola <strong>${usuario.nombre}</strong>,</p>
-                    <p>Tu código de verificación de 6 dígitos es:</p>
-                    <div style="background-color: #F1F5F9; padding: 15px; border-radius: 8px; text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 4px; color: #1E3A8A; width: 200px;">
-                        ${token}
+        // Envío por HTTP nativo con fetch (sin riesgo de bloqueos de puerto de Render)
+        const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+            method: 'POST',
+            headers: {
+                'accept': 'application/json',
+                'api-key': BREVO_API_KEY,
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+                sender: { name: "Florence App", email: "bryangegestrada@gmail.com" },
+                to: [{ email: correoLimpio, name: usuario.nombre }],
+                subject: "Código de Recuperación de Contraseña - Florence",
+                htmlContent: `
+                    <div style="font-family: Arial, sans-serif; padding: 20px; color: #0F172A;">
+                        <h2 style="color: #1E3A8A;">Recuperación de Contraseña - Florence</h2>
+                        <p>Hola <strong>${usuario.nombre}</strong>,</p>
+                        <p>Tu código de verificación de 6 dígitos es:</p>
+                        <div style="background-color: #F1F5F9; padding: 15px; border-radius: 8px; text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 4px; color: #1E3A8A; width: 200px;">
+                            ${token}
+                        </div>
+                        <p>Este código expirará en 15 minutos.</p>
                     </div>
-                    <p>Este código expirará en 15 minutos.</p>
-                </div>
-            `
-        };
+                `
+            })
+        });
 
-        const info = await transporter.sendMail(mailOptions);
-        console.log("Correo enviado con éxito:", info.response);
+        const data = await response.json();
+        console.log("==> Respuesta de Brevo API:", data);
 
-        return res.json({ success: true, mensaje: 'Código de verificación enviado al correo' });
+        if (response.ok) {
+            return res.json({ success: true, mensaje: 'Código de verificación enviado al correo' });
+        } else {
+            console.error("Error devuelto por Brevo:", data);
+            return res.status(500).json({ success: false, mensaje: 'Error al enviar el correo con Brevo' });
+        }
 
     } catch (error) {
-        console.error('Error al solicitar recuperación con Nodemailer:', error);
+        console.error('Error al solicitar recuperación con Brevo:', error);
         return res.status(500).json({ success: false, mensaje: 'Error al enviar el correo de recuperación' });
     }
 });
