@@ -107,6 +107,7 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // Solicitar código de recuperación de contraseña vía Brevo API REST (HTTP 443)
+// Solicitar código de recuperación (Funciona para CUALQUIER correo ingresado)
 app.post('/api/auth/recuperar-password', async (req, res) => {
     console.log("==> Petición recibida en /recuperar-password:", req.body);
 
@@ -136,30 +137,32 @@ app.post('/api/auth/recuperar-password', async (req, res) => {
             [token, expiracion, usuario.id]
         );
 
-        console.log("Token generado. Enviando mediante MailerSend REST API a:", correoLimpio);
+        console.log("Token generado con éxito. Enviando correo a:", correoLimpio);
 
-        const MAILERSEND_API_KEY = process.env.MAILERSEND_API_KEY || 'mlsn.463bdb09793a773efa8fa018b12918a48d591d0233356384178bddf906edcfca';
+        // Clave API de Brevo
+        const BREVO_API_KEY = process.env.BREVO_API_KEY || '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';
 
-        const response = await fetch('https://api.mailersend.com/v1/email', {
+        // Petición HTTP nativa (Puerto 443 - Render NO lo bloquea)
+        const response = await fetch('https://api.brevo.com/v3/smtp/email', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Authorization': `Bearer ${MAILERSEND_API_KEY}`
+                'accept': 'application/json',
+                'api-key': BREVO_API_KEY,
+                'content-type': 'application/json'
             },
             body: JSON.stringify({
-                from: {
-                    email: "info@test-68zx1275k3m4j905.mlsender.net",
-                    name: "Florence App"
+                sender: { 
+                    name: "Florence App", 
+                    email: "bryangegestrada@gmail.com" 
                 },
                 to: [
-                    {
-                        email: correoLimpio,
-                        name: usuario.nombre
+                    { 
+                        email: correoLimpio, // Correo dinámico: le llega a CUALQUIERA
+                        name: usuario.nombre 
                     }
                 ],
                 subject: "Código de Recuperación de Contraseña - Florence",
-                html: `
+                htmlContent: `
                     <div style="font-family: Arial, sans-serif; padding: 20px; color: #0F172A;">
                         <h2 style="color: #1E3A8A;">Recuperación de Contraseña - Florence</h2>
                         <p>Hola <strong>${usuario.nombre}</strong>,</p>
@@ -173,17 +176,18 @@ app.post('/api/auth/recuperar-password', async (req, res) => {
             })
         });
 
-        if (response.ok || response.status === 202) {
-            console.log("==> Correo enviado con éxito vía MailerSend API");
+        const data = await response.json();
+        console.log("==> Respuesta del servidor de correo:", data);
+
+        if (response.ok) {
             return res.json({ success: true, mensaje: 'Código de verificación enviado al correo' });
         } else {
-            const errData = await response.json();
-            console.error("==> Error devuelto por MailerSend:", errData);
+            console.error("==> Error de envío:", data);
             return res.status(500).json({ success: false, mensaje: 'Error al enviar el correo de recuperación' });
         }
 
     } catch (error) {
-        console.error('Error al solicitar recuperación con MailerSend:', error);
+        console.error('Error en el servidor al recuperar contraseña:', error);
         return res.status(500).json({ success: false, mensaje: 'Error al enviar el correo de recuperación' });
     }
 });
