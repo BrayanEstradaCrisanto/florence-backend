@@ -257,6 +257,13 @@ app.post('/api/vinculos/enlazar', async (req, res) => {
 
         const paciente = pacientes[0];
 
+        // 1. Desactivar cualquier vínculo activo previo de este cuidador
+        await db.query(
+            "UPDATE vinculos SET estado = 'inactivo' WHERE cuidador_id = ? AND paciente_id != ?",
+            [cuidador_id, paciente.id]
+        );
+
+        // 2. Activar o crear el vínculo con el nuevo paciente
         await db.query(`
             INSERT INTO vinculos (cuidador_id, paciente_id, estado)
             VALUES (?, ?, 'activo')
@@ -282,6 +289,7 @@ app.get('/api/vinculos/paciente-de/:cuidador_id', async (req, res) => {
             FROM vinculos v
             JOIN usuarios u ON v.paciente_id = u.id
             WHERE v.cuidador_id = ? AND v.estado = 'activo'
+            ORDER BY v.id DESC
             LIMIT 1
         `, [cuidador_id]);
 
