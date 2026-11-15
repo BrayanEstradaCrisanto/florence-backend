@@ -323,6 +323,41 @@ app.post('/api/medicamentos', async (req, res) => {
     }
 });
 
+// ==========================================
+// CATÁLOGO OFICIAL DE MEDICAMENTOS (CNIS)
+// ==========================================
+
+app.get('/api/catalogo-medicamentos', async (req, res) => {
+    const q = (req.query.q || '').trim();
+
+    try {
+        let querySql = `
+            SELECT id, clave_cnis, nombre_generico, presentacion, concentracion, categoria_clinica, indicacion_sugerida
+            FROM catalogo_medicamentos
+        `;
+        let params = [];
+
+        if (q.length > 0) {
+            querySql += ` WHERE nombre_generico LIKE ? OR categoria_clinica LIKE ? OR clave_cnis LIKE ? `;
+            const filtro = `%${q}%`;
+            params = [filtro, filtro, filtro];
+        }
+
+        querySql += ` ORDER BY nombre_generico ASC, concentracion ASC LIMIT 120 `;
+
+        const [catalogo] = await db.query(querySql, params);
+
+        return res.json({
+            success: true,
+            total: catalogo.length,
+            catalogo
+        });
+    } catch (error) {
+        console.error('Error al consultar catálogo CNIS:', error);
+        return res.status(500).json({ success: false, mensaje: 'Error al consultar el catálogo de medicamentos' });
+    }
+});
+
 app.get('/api/medicamentos/hoy/:paciente_id', async (req, res) => {
     const { paciente_id } = req.params;
 
