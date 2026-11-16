@@ -22,7 +22,7 @@ app.get('/api/ping', (req, res) => {
 // ==========================================
 
 app.post('/api/auth/registro', async (req, res) => {
-    const { nombre, correo, contrasena, rol } = req.body;
+    const { nombre, correo, telefono, contrasena, rol } = req.body;
 
     if (!nombre || !correo || !contrasena || !rol) {
         return res.status(400).json({ success: false, mensaje: 'Todos los campos son obligatorios' });
@@ -30,6 +30,8 @@ app.post('/api/auth/registro', async (req, res) => {
 
     try {
         const correoLimpio = correo.trim().toLowerCase();
+        const telefonoLimpio = (telefono || '').trim();
+
         const [existe] = await db.query('SELECT id FROM usuarios WHERE LOWER(TRIM(correo)) = ?', [correoLimpio]);
         
         if (existe.length > 0) {
@@ -40,8 +42,8 @@ app.post('/api/auth/registro', async (req, res) => {
         const passHash = await bcrypt.hash(contrasena, salt);
 
         const [resultado] = await db.query(
-            'INSERT INTO usuarios (nombre, correo, contrasena, rol) VALUES (?, ?, ?, ?)',
-            [nombre.trim(), correoLimpio, passHash, rol]
+            'INSERT INTO usuarios (nombre, correo, telefono, contrasena, rol) VALUES (?, ?, ?, ?, ?)',
+            [nombre.trim(), correoLimpio, telefonoLimpio || null, passHash, rol]
         );
 
         const token = jwt.sign(
@@ -54,7 +56,13 @@ app.post('/api/auth/registro', async (req, res) => {
             success: true,
             mensaje: 'Usuario registrado correctamente',
             token: token,
-            usuario: { id: resultado.insertId, nombre: nombre.trim(), correo: correoLimpio, rol }
+            usuario: {
+                id: resultado.insertId,
+                nombre: nombre.trim(),
+                correo: correoLimpio,
+                telefono: telefonoLimpio,
+                rol
+            }
         });
     } catch (error) {
         console.error('Error en registro:', error);
@@ -97,6 +105,7 @@ app.post('/api/auth/login', async (req, res) => {
                 id: usuario.id,
                 nombre: usuario.nombre,
                 correo: usuario.correo,
+                telefono: usuario.telefono || '',
                 rol: usuario.rol
             }
         });
@@ -106,8 +115,37 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
+// Actualizar teléfono de usuario existente
+app.put('/api/usuarios/:id/telefono', async (req, res) => {
+    const { id } = req.params;
+    const { telefono } = req.body;
+
+    if (!telefono || telefono.trim().length < 7) {
+        return res.status(400).json({ success: false, mensaje: 'Ingresa un número de teléfono válido' });
+    }
+
+    try {
+        const [resultado] = await db.query(
+            'UPDATE usuarios SET telefono = ? WHERE id = ?',
+            [telefono.trim(), id]
+        );
+
+        if (resultado.affectedRows === 0) {
+            return res.status(404).json({ success: false, mensaje: 'Usuario no encontrado' });
+        }
+
+        return res.json({
+            success: true,
+            mensaje: 'Teléfono actualizado correctamente',
+            telefono: telefono.trim()
+        });
+    } catch (error) {
+        console.error('Error al actualizar teléfono:', error);
+        return res.status(500).json({ success: false, mensaje: 'Error al actualizar teléfono' });
+    }
+});
+
 // Solicitar código de recuperación de contraseña vía Brevo API REST (HTTP 443)
-// Solicitar código de recuperación (Funciona para CUALQUIER correo ingresado)
 app.post('/api/auth/recuperar-password', async (req, res) => {
     console.log("==> Petición recibida en /recuperar-password:", req.body);
 
@@ -139,10 +177,8 @@ app.post('/api/auth/recuperar-password', async (req, res) => {
 
         console.log("Token generado con éxito. Enviando correo a:", correoLimpio);
 
-        // Clave API de Brevo
         const BREVO_API_KEY = process.env.BREVO_API_KEY || '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';
 
-        // Petición HTTP nativa (Puerto 443 - Render NO lo bloquea)
         const response = await fetch('https://api.brevo.com/v3/smtp/email', {
             method: 'POST',
             headers: {
@@ -157,7 +193,7 @@ app.post('/api/auth/recuperar-password', async (req, res) => {
                 },
                 to: [
                     { 
-                        email: correoLimpio, // Correo dinámico: le llega a CUALQUIERA
+                        email: correoLimpio,
                         name: usuario.nombre 
                     }
                 ],
@@ -247,7 +283,7 @@ app.post('/api/vinculos/enlazar', async (req, res) => {
     try {
         const correoLimpio = correo_paciente.trim().toLowerCase();
         const [pacientes] = await db.query(
-            "SELECT id, nombre, correo FROM usuarios WHERE LOWER(TRIM(correo)) = ? AND rol = 'paciente'",
+            "SELECT id, nombre, correo, telefono FROM usuarios WHERE LOWER(TRIM(correo)) = ? AND rol = 'paciente'",
             [correoLimpio]
         );
 
@@ -285,7 +321,7 @@ app.get('/api/vinculos/paciente-de/:cuidador_id', async (req, res) => {
     const { cuidador_id } = req.params;
     try {
         const [rows] = await db.query(`
-            SELECT u.id, u.nombre, u.correo
+            SELECT u.id, u.nombre, u.correo, u.telefono
             FROM vinculos v
             JOIN usuarios u ON v.paciente_id = u.id
             WHERE v.cuidador_id = ? AND v.estado = 'activo'
@@ -299,6 +335,30 @@ app.get('/api/vinculos/paciente-de/:cuidador_id', async (req, res) => {
 
         return res.json({ success: true, vinculado: true, paciente: rows[0] });
     } catch (error) {
+        return res.status(500).json({ success: false, mensaje: 'Error de servidor' });
+    }
+});
+
+// Obtener cuidador activo asignado a un paciente (incluye teléfono para llamada rápida)
+app.get('/api/vinculos/cuidador-de/:paciente_id', async (req, res) => {
+    const { paciente_id } = req.params;
+    try {
+        const [rows] = await db.query(`
+            SELECT u.id, u.nombre, u.correo, u.telefono
+            FROM vinculos v
+            JOIN usuarios u ON v.cuidador_id = u.id
+            WHERE v.paciente_id = ? AND v.estado = 'activo'
+            ORDER BY v.id DESC
+            LIMIT 1
+        `, [paciente_id]);
+
+        if (rows.length === 0) {
+            return res.json({ success: false, vinculado: false, mensaje: 'Sin cuidador asignado aún' });
+        }
+
+        return res.json({ success: true, vinculado: true, cuidador: rows[0] });
+    } catch (error) {
+        console.error('Error al obtener cuidador del paciente:', error);
         return res.status(500).json({ success: false, mensaje: 'Error de servidor' });
     }
 });
